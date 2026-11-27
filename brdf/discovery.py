@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 import itertools
 import re
+import sqlite3
+import struct
 import xml.etree.ElementTree as ET
 
 SCENE_RE = re.compile(r"^(S2[AB])_MSIL2A_(\d{8}T\d{6})_(N\d{4})_(R\d{3})_T(\d{2}[A-Z]{3})_(\d{8}T\d{6})\.SAFE$")
@@ -78,6 +81,124 @@ def read_tiles(path):
     if invalid:
         raise ValueError(f'Invalid MGRS tile IDs: {invalid}')
     return sorted(set(tiles))
+
+
+def _sql_identifier(value):
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _normalize_tile(value):
+    tile = str(value).strip().upper().removeprefix('T') if value is not None else ''
+    return tile if re.fullmatch(r'\d{2}[C-HJ-NP-X][A-HJ-NP-Z]{2}', tile) else None
+
+
+def _gpkg_geometry(blob):
+    """Decode a GeoPackage geometry binary header and its embedded WKB."""
+    from shapely import from_wkb
+    if blob is None or len(blob) < 8 or blob[:2] != b'GP' or blob[2] != 0:
+        raise ValueError('Invalid or missing GeoPackage geometry')
+    flags = blob[3]
+    envelope = (flags >> 1) & 7
+    if envelope > 4 or flags & 0x20:
+        raise ValueError('Unsupported GeoPackage geometry encoding')
+    lengths = (0, 4, 6, 6, 8)
+    offset = 8 + 8 * lengths[envelope]
+    if len(blob) <= offset or flags & 0x10:
+        raise ValueError('Empty or truncated GeoPackage geometry')
+    byte_order = '<' if flags & 1 else '>'
+    srs_id = struct.unpack(byte_order + 'i', blob[4:8])[0]
+    return from_wkb(blob[offset:]), srs_id
+
+
+def read_geopackage(path, layer=None, id_field=None):
+    """Read polygon tiles from a GeoPackage, returning IDs and lon/lat geometries."""
+    from pyproj import CRS, Transformer
+    from shapely.ops import transform as transform_geometry
+
+    uri = Path(path).resolve().as_uri() + '?mode=ro'
+    with closing(sqlite3.connect(uri, uri=True)) as db:
+        layers = db.execute("SELECT table_name FROM gpkg_contents WHERE data_type='features' ORDER BY table_name").fetchall()
+        layers = [row[0] for row in layers]
+        if layer is None:
+            if len(layers) != 1:
+                raise ValueError(f'GeoPackage has {len(layers)} feature layers {layers}; set tiles.geopackage_layer')
+            layer = layers[0]
+        if layer not in layers:
+            raise ValueError(f'GeoPackage layer {layer!r} not found; available feature layers: {layers}')
+        metadata = db.execute('SELECT column_name, srs_id FROM gpkg_geometry_columns WHERE table_name=?', (layer,)).fetchall()
+        if len(metadata) != 1:
+            raise ValueError(f'Expected one geometry column in GeoPackage layer {layer!r}')
+        geom_col, srs_id = metadata[0]
+        srs = db.execute('SELECT organization, organization_coordsys_id, definition FROM gpkg_spatial_ref_sys WHERE srs_id=?', (srs_id,)).fetchone()
+        if srs is None or srs_id in (-1, 0):
+            raise ValueError(f'GeoPackage layer {layer!r} has no defined CRS')
+        try:
+            crs = CRS.from_user_input(f'{srs[0]}:{srs[1]}') if str(srs[0]).upper() == 'EPSG' else CRS.from_wkt(srs[2])
+        except Exception as exc:
+            raise ValueError(f'Cannot interpret CRS for GeoPackage layer {layer!r}: {exc}') from exc
+        columns = [r[1] for r in db.execute(f'PRAGMA table_info({_sql_identifier(layer)})').fetchall() if r[1] != geom_col]
+        rows = db.execute(f'SELECT * FROM {_sql_identifier(layer)}').fetchall()
+        names = [r[1] for r in db.execute(f'PRAGMA table_info({_sql_identifier(layer)})').fetchall()]
+        if not rows:
+            raise ValueError(f'GeoPackage layer {layer!r} is empty')
+        if id_field is None:
+            candidates = [c for c in columns if all(_normalize_tile(row[names.index(c)]) for row in rows)]
+            if len(candidates) != 1:
+                raise ValueError(f'Could not uniquely identify tile ID field in {layer!r}; candidates: {candidates}; set tiles.tile_id_field')
+            id_field = candidates[0]
+        if id_field not in columns:
+            raise ValueError(f'Tile ID field {id_field!r} not found in {layer!r}; fields: {columns}')
+        converter = Transformer.from_crs(crs, 4326, always_xy=True)
+        geometries = {}
+        for row in rows:
+            tile = _normalize_tile(row[names.index(id_field)])
+            if tile is None:
+                raise ValueError(f'Invalid tile ID {row[names.index(id_field)]!r} in {layer}.{id_field}')
+            if tile in geometries:
+                raise ValueError(f'Duplicate tile ID {tile} in {layer}.{id_field}')
+            geom, geometry_srs = _gpkg_geometry(row[names.index(geom_col)])
+            if geometry_srs != srs_id:
+                raise ValueError(f'Inconsistent CRS for tile {tile}: {geometry_srs} != {srs_id}')
+            if geom.geom_type not in ('Polygon', 'MultiPolygon') or geom.is_empty or not geom.is_valid:
+                raise ValueError(f'Tile {tile} must have a nonempty valid polygon geometry')
+            geom = transform_geometry(converter.transform, geom)
+            if not all(map(lambda x: abs(x) < float('inf'), geom.bounds)):
+                raise ValueError(f'Invalid geographic coordinates for {tile}')
+            geometries[tile] = geom
+    return geometries, {'layer': layer, 'id_field': id_field, 'source_crs': crs.to_string()}
+
+
+def geopackage_neighbors(geometries, tolerance_m=2500):
+    """Find horizontal MGRS neighbors using polygon centers in their common UTM CRS.
+
+    Full grid polygons are expected: their projected centers are 100 km apart
+    east/west and have matching northings, whether grid cells touch or overlap.
+    """
+    from pyproj import Transformer
+    from shapely.ops import transform as transform_geometry
+    if not 0 < tolerance_m < 25000:
+        raise ValueError('tiles.neighbor_tolerance_m must be positive and less than 25000')
+    transformed = {}
+    for tile, geom in geometries.items():
+        zone = int(tile[:2])
+        if not 1 <= zone <= 60:
+            raise ValueError(f'Invalid UTM zone for {tile}')
+        north = tile[2] >= 'N'
+        transformer = Transformer.from_crs(4326, (32600 if north else 32700) + zone, always_xy=True)
+        projected = transform_geometry(transformer.transform, geom)
+        center = projected.centroid
+        if not center.is_valid or not (-1000000 < center.x < 2000000):
+            raise ValueError(f'Tile {tile} geometry does not appear to be in its stated UTM zone')
+        transformed[tile] = (zone, north, center.x, center.y)
+    pairs = []
+    tiles = sorted(transformed)
+    for i, a in enumerate(tiles):
+        zone_a, north_a, x_a, y_a = transformed[a]
+        for b in tiles[i+1:]:
+            zone_b, north_b, x_b, y_b = transformed[b]
+            if (zone_a, north_a) == (zone_b, north_b) and abs(abs(x_a-x_b)-100000) <= tolerance_m and abs(y_a-y_b) <= tolerance_m:
+                pairs.append((a, b))
+    return pairs
 
 
 def discover(archive, tiles, start, end, cloud_limit):

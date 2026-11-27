@@ -12,7 +12,8 @@ import uuid
 import yaml
 
 from . import __version__
-from .discovery import discover, horizontal_neighbors, make_groups, read_tiles, tile_geometry
+from .discovery import (discover, geopackage_neighbors, horizontal_neighbors, make_groups,
+                        read_geopackage, read_tiles, tile_geometry)
 
 
 def date(value):
@@ -27,13 +28,20 @@ def load_config(path):
     if not isinstance(config, dict):
         raise ValueError('Configuration must be a YAML mapping')
     paths = config['paths']
-    for key in ('l2a_archive', 'worldcover_2021', 'tile_list', 'output'):
+    for key in ('l2a_archive', 'worldcover_2021', 'output'):
         if not isinstance(paths.get(key), str) or not paths[key].strip():
             raise ValueError(f'paths.{key} must be set')
         paths[key] = str(Path(paths[key]).expanduser().resolve())
+    tile_paths = [key for key in ('tile_geopackage', 'tile_list') if paths.get(key)]
+    if len(tile_paths) != 1 or not isinstance(paths[tile_paths[0]], str):
+        raise ValueError('Set exactly one of paths.tile_geopackage or paths.tile_list')
+    tile_key = tile_paths[0]
+    paths[tile_key] = str(Path(paths[tile_key]).expanduser().resolve())
+    if tile_key == 'tile_geopackage' and Path(paths[tile_key]).suffix.lower() != '.gpkg':
+        raise ValueError('paths.tile_geopackage must be a .gpkg file')
     if not Path(paths['l2a_archive']).is_dir():
         raise ValueError('L2A archive directory does not exist')
-    for key in ('worldcover_2021', 'tile_list'):
+    for key in ('worldcover_2021', tile_key):
         if not Path(paths[key]).is_file():
             raise ValueError(f'paths.{key} does not exist: {paths[key]}')
     s, p, run = config['selection'], config['sampling'], config['processing']
@@ -62,7 +70,18 @@ def main(argv=None):
         parser.error('--end must be later than --start')
     config = load_config(args.config)
     paths, select = config['paths'], config['selection']
-    tiles = read_tiles(paths['tile_list'])
+    tile_path = paths.get('tile_geopackage') or paths['tile_list']
+    gpkg_metadata = None
+    gpkg_neighbors = None
+    if Path(tile_path).suffix.lower() == '.gpkg':
+        opts = config.get('tiles', {})
+        if not isinstance(opts, dict):
+            raise ValueError('tiles must be a mapping')
+        geometry, gpkg_metadata = read_geopackage(tile_path, opts.get('geopackage_layer'), opts.get('tile_id_field'))
+        tiles = sorted(geometry)
+        gpkg_neighbors = geopackage_neighbors(geometry, float(opts.get('neighbor_tolerance_m', 2500)))
+    else:
+        tiles = read_tiles(tile_path)
     out = Path(paths['output'])
     out.mkdir(parents=True, exist_ok=True)
     run_id = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%S}_{uuid.uuid4().hex[:10]}"
@@ -71,6 +90,9 @@ def main(argv=None):
     report = {'run_id': run_id, 'software_version': __version__, 'config': config,
               'start_inclusive_utc': args.start.isoformat()+'Z', 'end_exclusive_utc': args.end.isoformat()+'Z',
               'tile_count': len(tiles), 'issues': [], 'groups': []}
+    if gpkg_metadata is not None:
+        report['tile_geopackage'] = {'path': tile_path, **gpkg_metadata,
+                                     'neighbor_tolerance_m': float(config.get('tiles', {}).get('neighbor_tolerance_m', 2500))}
     from .process import atomic_json, process_group
     try:
         print(f'Discovering scenes across {len(tiles)} tiles', flush=True)
@@ -85,24 +107,31 @@ def main(argv=None):
         report['eligible_scenes'] = [{'id': s.id, 'tile': s.tile, 'path': str(s.path),
                                       'cloud_percent': s.cloud} for s in scenes]
         report['tiles_without_eligible_scenes'] = sorted(set(tiles) - {s.tile for s in scenes})
-        geometries = {}
-        for scene in scenes:
-            if scene.tile not in geometries:
-                try:
-                    geometries[scene.tile] = tile_geometry(scene)
-                except Exception as exc:
-                    report['issues'].append(f'{scene.tile}: cannot read tile geometry: {exc}')
-        neighbors = []
-        available = sorted(geometries)
-        for i, a in enumerate(available):
-            (lon1, lat1), _ = geometries[a]
-            for b in available[i+1:]:
-                (lon2, lat2), _ = geometries[b]
-                lon_limit = min(180, 2.0/max(0.01, math.cos(math.radians((lat1+lat2)/2))))
-                if abs(lat1-lat2) < 0.6 and abs(lon1-lon2) < lon_limit:
-                    if horizontal_neighbors(geometries[a], geometries[b]):
-                        neighbors.append((a, b))
+        if gpkg_neighbors is not None:
+            neighbors = gpkg_neighbors
+        else:
+            geometries = {}
+            for scene in scenes:
+                if scene.tile not in geometries:
+                    try:
+                        geometries[scene.tile] = tile_geometry(scene)
+                    except Exception as exc:
+                        report['issues'].append(f'{scene.tile}: cannot read tile geometry: {exc}')
+            neighbors = []
+            available = sorted(geometries)
+            for i, a in enumerate(available):
+                (lon1, lat1), _ = geometries[a]
+                for b in available[i+1:]:
+                    (lon2, lat2), _ = geometries[b]
+                    lon_limit = min(180, 2.0/max(0.01, math.cos(math.radians((lat1+lat2)/2))))
+                    if abs(lat1-lat2) < 0.6 and abs(lon1-lon2) < lon_limit:
+                        if horizontal_neighbors(geometries[a], geometries[b]):
+                            neighbors.append((a, b))
         report['neighbor_pairs'] = neighbors
+        if gpkg_neighbors is not None:
+            report['tiles_without_horizontal_neighbors'] = sorted(set(tiles) - {t for pair in neighbors for t in pair})
+        available_tiles = {s.tile for s in scenes}
+        report['neighbor_pairs_with_eligible_scenes'] = [p for p in neighbors if all(tile in available_tiles for tile in p)]
         groups = make_groups(scenes, neighbors, float(select['max_pair_minutes']),
                              float(select['max_neighbor_sensing_minutes']))
         groups = [g for g in groups if args.start <= min(s.sensing for pair in g for s in pair) < args.end]

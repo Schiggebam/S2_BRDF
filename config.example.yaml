@@ -1,8 +1,15 @@
 paths:
   l2a_archive: /path/to/L2A/tiles
   worldcover_2021: /path/to/WorldCover_2021.vrt
-  tile_list: /path/to/tile_list.txt
+  tile_geopackage: /path/to/sentinel2_tiles.gpkg
   output: /path/to/output
+
+tiles:
+  # Optional if the GeoPackage has one feature layer and one tile ID field.
+  # geopackage_layer: sentinel_tiles
+  tile_id_field: Tile
+  # Tolerance around 100 km easting and equal northing, in the tile's UTM zone.
+  neighbor_tolerance_m: 2500
 
 selection:
   max_cloud_percent_exclusive: 20.0
