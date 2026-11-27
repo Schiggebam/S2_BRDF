@@ -1,0 +1,23 @@
+paths:
+  l2a_archive: C:/tmp/test_data
+  worldcover_2021: test_worldcover_mosaic.tif
+  tile_list: tile_list.example.txt
+  output: test_output
+selection:
+  max_cloud_percent_exclusive: 20.0
+  max_sun_zenith_deg_exclusive: 70.0
+  near_nadir_deg_exclusive: 4.0
+  valid_scl: [4, 5]
+  landcover_classes: [10, 30, 40]
+  max_pair_minutes: 30
+  max_neighbor_sensing_minutes: 3
+sampling:
+  samples_per_class_per_tile: 200
+  split_cropland_ndvi: true
+  bare_ndvi_threshold: 0.1
+  seed: 42
+  window_pixels: 512
+processing:
+  geometry_band: B04
+  workers: 1
+  worldcover_revision: local-test-2021

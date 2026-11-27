@@ -1,0 +1,152 @@
+{
+  "completed_utc": "2026-11-26T20:26:25.071433+00:00",
+  "fingerprint": "73bce724ed52e7c73ccd61708ec22af02eb13e048a54ecc4815dca9b511f41d5",
+  "group_id": "20250318_32UPU_32UQU_73bce724ed52e7c7",
+  "identity": {
+    "geometry_band": "B04",
+    "inputs": [
+      {
+        "cloud_percent": 0.206496,
+        "id": "S2A_MSIL2A_20250318T101751_N0511_R065_T32UPU_20250318T160400",
+        "path": "C:\\tmp\\test_data\\S2A_MSIL2A_20250318T101751_N0511_R065_T32UPU_20250318T160400.SAFE",
+        "product_metadata_sha256": "4f47ddd3db3d94b92ef5663b8ac7edd587adbb413e55ed0928be1737a9798ab8",
+        "tile_metadata_sha256": "d57d8c0a8773b3f1ef5bb2e04b98cfe0d4f60b86df62a14633c97c7a9b326630"
+      },
+      {
+        "cloud_percent": 0.259859,
+        "id": "S2B_MSIL2A_20250318T100639_N0511_R022_T32UPU_20250318T141314",
+        "path": "C:\\tmp\\test_data\\S2B_MSIL2A_20250318T100639_N0511_R022_T32UPU_20250318T141314.SAFE",
+        "product_metadata_sha256": "ebf59a6e1c71ec2336f786955de2de4d930d169872a302e218dffda17b0a23d1",
+        "tile_metadata_sha256": "f4513845b81fc6eced8960603b65f706e30edef2d7476f63b8453e97ca0c2701"
+      },
+      {
+        "cloud_percent": 0.17143,
+        "id": "S2A_MSIL2A_20250318T101751_N0511_R065_T32UQU_20250318T160400",
+        "path": "C:\\tmp\\test_data\\S2A_MSIL2A_20250318T101751_N0511_R065_T32UQU_20250318T160400.SAFE",
+        "product_metadata_sha256": "5972d514fba8bb3e0af6cb9b263ddc99d9976672f8cd413cc7b53457e3475907",
+        "tile_metadata_sha256": "6e5a84a5ab40c8a0f9284bf080a75e7165c40c2e68dab5820a176ed5b603828f"
+      },
+      {
+        "cloud_percent": 0.333317,
+        "id": "S2B_MSIL2A_20250318T100639_N0511_R022_T32UQU_20250318T141314",
+        "path": "C:\\tmp\\test_data\\S2B_MSIL2A_20250318T100639_N0511_R022_T32UQU_20250318T141314.SAFE",
+        "product_metadata_sha256": "381c525d8c722d84e9c0aa15aeabb39370dae63df0025b74d978984d4fdeb423",
+        "tile_metadata_sha256": "ee32216d8296770de25b99d3e5b303a903aafd55cdff12a6e2eb49ff2b1dbe4a"
+      }
+    ],
+    "sampling": {
+      "samples_per_class_per_tile": 200,
+      "seed": 42,
+      "window_pixels": 512
+    },
+    "selection": {
+      "landcover_classes": [
+        10,
+        30,
+        40
+      ],
+      "max_cloud_percent_exclusive": 20.0,
+      "max_neighbor_sensing_minutes": 3,
+      "max_pair_minutes": 30,
+      "max_sun_zenith_deg_exclusive": 70.0,
+      "near_nadir_deg_exclusive": 4.0,
+      "valid_scl": [
+        4,
+        5
+      ]
+    },
+    "software_version": "0.1.0",
+    "source_sha256": {
+      "__init__.py": "ab01fac322e45b19608532c2a281b250121307c26344061a3123605dc2cd0281",
+      "__main__.py": "328c9001b13ea30f8c907eb560c94a96a7afc7bda294327145f846161229ebc9",
+      "discovery.py": "beaa5895b5db7fbd64085e94b47bf3ac456e67c05ba7c7339f05f1c34393de26",
+      "geometry.py": "a01e646ce3a0a597d330f85b36aaf59e8c25b6b2a39c234524870ff31a510e52",
+      "process.py": "f96d6e1be2db5e1ca21c4eff6d8872ff91398beb5f4666d3849d819703c1b0c2"
+    },
+    "worldcover_2021": "C:\\Users\\plkrs\\OneDrive\\Coding\\DLR\\S2_BRDF\\test_worldcover_mosaic.tif",
+    "worldcover_mtime_ns": 1795724654979357800,
+    "worldcover_revision": "local-test-2021",
+    "worldcover_size": 6355446
+  },
+  "quality": {
+    "32UPU": {
+      "eligible_by_class": {
+        "10": 1164883,
+        "30": 1082507,
+        "40": 1466151
+      },
+      "eligible_closest_to_nadir": {
+        "S2A": 3713541,
+        "S2B": 0
+      },
+      "pixels_examined": 30140100,
+      "radiometry": {
+        "a": {
+          "offsets": {
+            "B04": -1000.0,
+            "B08": -1000.0,
+            "B12": -1000.0
+          },
+          "quantification": 10000.0
+        },
+        "b": {
+          "offsets": {
+            "B04": -1000.0,
+            "B08": -1000.0,
+            "B12": -1000.0
+          },
+          "quantification": 10000.0
+        }
+      },
+      "sampled_by_class": {
+        "10": 200,
+        "30": 200,
+        "40": 200
+      },
+      "valid_geometry": 3713541,
+      "valid_radiometry": 19334011,
+      "valid_scl_landcover": 19334011
+    },
+    "32UQU": {
+      "eligible_by_class": {
+        "10": 1345068,
+        "30": 1103059,
+        "40": 1339157
+      },
+      "eligible_closest_to_nadir": {
+        "S2A": 0,
+        "S2B": 3787284
+      },
+      "pixels_examined": 30140100,
+      "radiometry": {
+        "a": {
+          "offsets": {
+            "B04": -1000.0,
+            "B08": -1000.0,
+            "B12": -1000.0
+          },
+          "quantification": 10000.0
+        },
+        "b": {
+          "offsets": {
+            "B04": -1000.0,
+            "B08": -1000.0,
+            "B12": -1000.0
+          },
+          "quantification": 10000.0
+        }
+      },
+      "sampled_by_class": {
+        "10": 200,
+        "30": 200,
+        "40": 200
+      },
+      "valid_geometry": 3787284,
+      "valid_radiometry": 12667808,
+      "valid_scl_landcover": 12667808
+    }
+  },
+  "sample_count": 1200,
+  "samples_sha256": "a7edf8279c74c714a6c5efbe8d63fa826dda3c68de6c1fefb50cb0c34200d1df",
+  "status": "complete"
+}

@@ -1,0 +1,41 @@
+{
+  "formula": "100 * (off_nadir - near_nadir) / near_nadir",
+  "phase_direction": "off-nadir solar phase minus near-nadir solar phase",
+  "min_near_reflectance": 0.01,
+  "bare_ndvi_threshold": 0.1,
+  "crop_ndvi_source": "near-nadir observation",
+  "counts_by_band": {
+    "B04": {
+      "input": 1600,
+      "nonfinite": 0,
+      "low_near": 23,
+      "valid": 1577,
+      "missing_crop_ndvi": 0
+    },
+    "B08": {
+      "input": 1600,
+      "nonfinite": 0,
+      "low_near": 1,
+      "valid": 1599,
+      "missing_crop_ndvi": 0
+    },
+    "B12": {
+      "input": 1600,
+      "nonfinite": 0,
+      "low_near": 0,
+      "valid": 1600,
+      "missing_crop_ndvi": 0
+    }
+  },
+  "inputs": [
+    {
+      "manifest": "test_output\\20250318_32UPU_32UQU_ff6dc776531b35a5\\manifest.json",
+      "rows": 1600,
+      "group_id": "20250318_32UPU_32UQU_ff6dc776531b35a5"
+    }
+  ],
+  "skipped": [
+    "test_output\\20250318_32UPU_32UQU_73bce724ed52e7c7\\manifest.json: superseded by newer output for the same scenes"
+  ],
+  "note": "Samples are pooled; variability is sample SD, not uncertainty across independent overpasses."
+}
