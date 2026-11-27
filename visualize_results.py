@@ -26,6 +26,14 @@ COLORS = {'S2A near · lower phase': '#2166ac', 'S2A near · higher phase': '#8b
           'S2A near · equal phase': '#777777', 'S2B near · equal phase': '#bbbbbb'}
 
 
+def legend_label(direction):
+    sensor, phase = direction.split(' near · ')
+    off_sensor = 'S2B' if sensor == 'S2A' else 'S2A'
+    scattering = {'lower phase': 'toward backscatter', 'higher phase': 'toward forward scatter',
+                  'equal phase': 'equal solar phase'}[phase]
+    return f'{sensor} near; {off_sensor} off-nadir {scattering}'
+
+
 def checksum(path):
     digest = hashlib.sha256()
     with path.open('rb') as stream:
@@ -64,7 +72,7 @@ def find_results(root):
     return sorted(candidates.values(), key=lambda x: x[1]), skipped
 
 
-def collect(results, threshold, ndvi_threshold=0.1, definition='off-near'):
+def collect(results, threshold, ndvi_threshold=0.1, definition='off-near', pair_values=None):
     values = defaultdict(list)
     groups = defaultdict(set)
     counts = defaultdict(lambda: {'input': 0, 'nonfinite': 0, 'low_near': 0, 'valid': 0})
@@ -75,6 +83,8 @@ def collect(results, threshold, ndvi_threshold=0.1, definition='off-near'):
             inputs.append({'manifest': manifest_path, 'rows': 0})
             continue
         required = ['worldcover_class', 'near_nadir_platform', 'solar_phase_a_deg', 'solar_phase_b_deg', 'ndvi_a', 'ndvi_b']
+        if pair_values is not None:
+            required += ['tile_id', 'scene_a', 'scene_b', 'sensing_a_utc', 'sensing_b_utc']
         required += [f'{band}_reflectance_{sensor}' for band in BANDS for sensor in ('a', 'b')]
         missing = sorted(set(required) - set(table.column_names))
         if missing:
@@ -82,6 +92,14 @@ def collect(results, threshold, ndvi_threshold=0.1, definition='off-near'):
         col = lambda name: np.asarray(table[name].to_pylist())
         classes = col('worldcover_class')
         sensor = col('near_nadir_platform')
+        if pair_values is not None:
+            tile_ids, scene_a, scene_b = (col(name) for name in ('tile_id', 'scene_a', 'scene_b'))
+            time_a, time_b = (col(name) for name in ('sensing_a_utc', 'sensing_b_utc'))
+            matchup_keys = list(zip(tile_ids, scene_a, scene_b, time_a, time_b))
+            if any(any(value is None or str(value).strip() == '' for value in key) for key in matchup_keys):
+                raise ValueError(f'{data}: missing matchup scene, time or tile identifiers')
+            distinct_matchups = sorted(set(matchup_keys))
+            matchup_masks = {key: np.array([row == key for row in matchup_keys]) for key in distinct_matchups}
         if not np.isin(sensor, ['S2A', 'S2B']).all():
             raise ValueError(f'{data}: unknown near-nadir platform')
         a_near = sensor == 'S2A'
@@ -124,6 +142,15 @@ def collect(results, threshold, ndvi_threshold=0.1, definition='off-near'):
                         values[key].append(100 * ((a[mask] - b[mask]) / b[mask] if definition == 'a-b'
                                                   else (off[mask] - near[mask]) / near[mask]))
                         groups[key].add(manifest['group_id'])
+                        if pair_values is not None:
+                            for matchup, matchup_mask in matchup_masks.items():
+                                pair_mask = mask & matchup_mask
+                                if not pair_mask.any():
+                                    continue
+                                delta = 100 * ((a[pair_mask] - b[pair_mask]) / b[pair_mask] if definition == 'a-b'
+                                               else (off[pair_mask] - near[pair_mask]) / near[pair_mask])
+                                pair_key = (manifest['group_id'], *matchup, str(cls), band, category)
+                                pair_values[pair_key].append(delta)
         inputs.append({'manifest': manifest_path, 'rows': table.num_rows, 'group_id': manifest['group_id']})
     return {k: np.concatenate(v) for k, v in values.items()}, groups, dict(counts), inputs
 
@@ -143,6 +170,81 @@ def summarize(values, groups):
                      'p75_pct': float(np.percentile(data, 75)), 'p05_pct': float(np.percentile(data, 5)),
                      'p95_pct': float(np.percentile(data, 95))})
     return rows
+
+
+def summarize_pairs(pair_values, min_samples):
+    """Summarize pixels separately for every tile, acquisition pair and class."""
+    rows = []
+    for key, chunks in sorted(pair_values.items()):
+        group_id, tile, scene_a, scene_b, time_a, time_b, cls, band, direction = key
+        data = np.concatenate(chunks)
+        class_id = int(cls.split('_')[0])
+        sufficient = len(data) >= min_samples
+        rows.append({'group_id': group_id, 'tile_id': tile, 'scene_a': scene_a, 'scene_b': scene_b,
+                     'sensing_a_utc': time_a, 'sensing_b_utc': time_b,
+                     'worldcover_class': class_id, 'landcover': CLASS_NAMES.get(class_id, f'Class {class_id}'),
+                     'crop_condition': cls.split('_', 1)[1] if '_' in cls else '',
+                     'band': band, 'phase_direction': direction, 'n_samples': len(data),
+                     'status': 'ok' if sufficient else 'too_few_samples',
+                     'mean_pct': float(np.mean(data)), 'median_pct': float(np.median(data)),
+                     'p25_pct': float(np.percentile(data, 25)), 'p75_pct': float(np.percentile(data, 75)),
+                     'iqr_pct_points': float(np.percentile(data, 75)-np.percentile(data, 25)),
+                     'std_pct_points': float(np.std(data, ddof=1)) if sufficient else None,
+                     'variance_pct_points_squared': float(np.var(data, ddof=1)) if sufficient else None})
+    return rows
+
+
+def deduplicate_matchups(pair_values, results):
+    """Keep one sampled instance when a tile pair occurs in multiple groups."""
+    completed = {manifest['group_id']: (stamp, manifest['group_id']) for stamp, _, _, manifest in results}
+    choices = defaultdict(set)
+    for group_id, tile, scene_a, scene_b, *_ in pair_values:
+        choices[(tile, scene_a, scene_b)].add(group_id)
+    chosen = {key: max(group_ids, key=lambda group: completed[group]) for key, group_ids in choices.items()}
+    ignored = [{'tile_id': tile, 'scene_a': a, 'scene_b': b, 'kept_group': chosen[(tile, a, b)],
+                'skipped_groups': sorted(group_ids - {chosen[(tile, a, b)]})}
+               for (tile, a, b), group_ids in sorted(choices.items()) if len(group_ids) > 1]
+    return {key: value for key, value in pair_values.items() if key[0] == chosen[key[1:4]]}, ignored
+
+
+def make_pair_variance_figure(rows, output, ndvi_threshold, definition, scale):
+    plotted = [row for row in rows if row['status'] == 'ok']
+    if not plotted:
+        return False
+    def class_key(row):
+        return str(row['worldcover_class']) + ('_' + row['crop_condition'] if row['crop_condition'] else '')
+    classes = sorted({class_key(row) for row in rows}, key=lambda x: (int(x.split('_')[0]), x))
+    directions = [d for d in DIRECTIONS if any(row['phase_direction'] == d for row in plotted)]
+    fig, axes = plt.subplots(1, 3, figsize=(16, 7), sharey=True)
+    fig.subplots_adjust(left=0.07, right=0.985, bottom=0.23, top=0.80, wspace=0.12)
+    for ax, band in zip(axes, BANDS):
+        for row in (r for r in plotted if r['band'] == band):
+            cls, direction = class_key(row), row['phase_direction']
+            j = directions.index(direction)
+            offset = (j-(len(directions)-1)/2) * min(0.25, 0.7/max(len(directions), 1))
+            identifier = '|'.join(str(row[k]) for k in ('group_id', 'tile_id', 'scene_a', 'scene_b', 'phase_direction'))
+            jitter = (int(hashlib.sha256(identifier.encode()).hexdigest()[:8], 16)/0xffffffff - 0.5)*0.08
+            ax.scatter(classes.index(cls)+offset+jitter, row['variance_pct_points_squared'],
+                       color=COLORS[direction], alpha=0.75, edgecolors='white', linewidths=0.4, s=35)
+        labels = [f'Cropland\nbare (<{ndvi_threshold:g})' if c == '40_bare' else
+                  f'Cropland\nNDVI ≥{ndvi_threshold:g}' if c == '40_vegetated' else
+                  CLASS_NAMES.get(int(c), f'Class {c}') for c in classes]
+        ax.set_xticks(range(len(classes)), labels, fontsize=8)
+        ax.set_title(band, fontweight='bold')
+        if scale == 'symlog':
+            ax.set_yscale('symlog', linthresh=1)
+        ax.grid(axis='y', alpha=0.2)
+    axes[0].set_ylabel('Within-matchup sample variance (percentage points²)' +
+                       ('\nSymmetric log scale' if scale == 'symlog' else ''))
+    legend = [Line2D([0], [0], marker='o', color='none', markerfacecolor=COLORS[d],
+                     markeredgecolor='none', label=legend_label(d)) for d in directions]
+    fig.legend(handles=legend, loc='upper center', bbox_to_anchor=(0.5, 0.91), ncol=max(1, min(3, len(legend))), frameon=False)
+    label = '(S2A − S2B) / S2B' if definition == 'a-b' else '(off-nadir − near-nadir) / near-nadir'
+    fig.suptitle('Reflectance-difference variance in individual tile matchups', y=0.98, fontsize=15, fontweight='bold')
+    fig.text(0.5, 0.025, f'One point = one tile matchup and class; sample variance (ddof=1) of 100 × {label}. No pooling across matchups.', ha='center', fontsize=9)
+    fig.savefig(output, dpi=180, bbox_inches='tight')
+    plt.close(fig)
+    return True
 
 
 def make_figure(values, output, threshold, ndvi_threshold, definition='off-near'):
@@ -183,12 +285,6 @@ def make_figure(values, output, threshold, ndvi_threshold, definition='off-near'
         ax.set_title(band, fontweight='bold')
         ax.set_ylabel('(S2A − S2B) / S2B (%)' if definition == 'a-b' else 'Off-nadir vs near-nadir reflectance (%)')
         ax.grid(axis='y', alpha=0.2)
-    def legend_label(direction):
-        sensor, phase = direction.split(' near · ')
-        off_sensor = 'S2B' if sensor == 'S2A' else 'S2A'
-        scattering = {'lower phase': 'toward backscatter', 'higher phase': 'toward forward scatter',
-                      'equal phase': 'equal solar phase'}[phase]
-        return f'{sensor} near; {off_sensor} off-nadir {scattering}'
     legend = [Line2D([0],[0], color=COLORS[d], lw=8, alpha=.7, label=legend_label(d)) for d in directions]
     legend.append(Line2D([0],[0], marker='D', markerfacecolor='white', markeredgecolor='black', linestyle='None', label='Mean'))
     fig.legend(handles=legend, loc='upper center', bbox_to_anchor=(0.5, 0.91), ncol=len(legend), frameon=False)
@@ -210,29 +306,51 @@ def main(argv=None):
                         help='Classify cropland with near-nadir NDVI below this value as bare (default: 0.1)')
     parser.add_argument('--definition', choices=('off-near', 'a-b'), default='off-near',
                         help='Relative difference: off-nadir vs near-nadir, or consistent (S2A-S2B)/S2B')
+    parser.add_argument('--min-pair-samples', type=int, default=2,
+                        help='Minimum valid samples per matchup and class to plot variance (default: 2)')
+    parser.add_argument('--variance-scale', choices=('linear', 'symlog'), default='symlog',
+                        help='Variance plot y-axis scale (default: symlog; use linear for a linear axis)')
+    parser.add_argument('--include-pooled', action='store_true',
+                        help='Also produce the original pooled box plot and summary')
     args = parser.parse_args(argv)
     if not args.results_dir.is_dir(): parser.error('results_dir must exist')
     if not np.isfinite(args.min_near_reflectance) or args.min_near_reflectance <= 0:
         parser.error('--min-near-reflectance must be positive')
     if not np.isfinite(args.bare_ndvi_threshold): parser.error('--bare-ndvi-threshold must be finite')
+    if args.min_pair_samples < 2: parser.error('--min-pair-samples must be at least 2')
     results, skipped = find_results(args.results_dir)
     if not results:
         raise SystemExit('No complete, checksum-valid result groups found.\n' + '\n'.join(skipped))
-    values, groups, counts, inputs = collect(results, args.min_near_reflectance, args.bare_ndvi_threshold, args.definition)
+    pair_values = defaultdict(list)
+    values, groups, counts, inputs = collect(results, args.min_near_reflectance, args.bare_ndvi_threshold, args.definition, pair_values)
     if not values: raise SystemExit('No samples passed the reflectance and geometry filters')
-    rows = summarize(values, groups)
+    pair_values, duplicate_matchups = deduplicate_matchups(pair_values, results)
+    pair_rows = summarize_pairs(pair_values, args.min_pair_samples)
     args.output.mkdir(parents=True, exist_ok=True)
-    with (args.output/'summary.csv').open('w', newline='', encoding='utf-8') as stream:
-        writer = csv.DictWriter(stream, fieldnames=rows[0].keys()); writer.writeheader(); writer.writerows(rows)
-    make_figure(values, args.output/'relative_difference.png', args.min_near_reflectance, args.bare_ndvi_threshold, args.definition)
+    with (args.output/'pair_summary.csv').open('w', newline='', encoding='utf-8') as stream:
+        writer = csv.DictWriter(stream, fieldnames=pair_rows[0].keys()); writer.writeheader(); writer.writerows(pair_rows)
+    has_plot = make_pair_variance_figure(pair_rows, args.output/'variance_per_pair.png', args.bare_ndvi_threshold, args.definition, args.variance_scale)
+    if args.include_pooled:
+        rows = summarize(values, groups)
+        with (args.output/'summary.csv').open('w', newline='', encoding='utf-8') as stream:
+            writer = csv.DictWriter(stream, fieldnames=rows[0].keys()); writer.writeheader(); writer.writerows(rows)
+        make_figure(values, args.output/'relative_difference.png', args.min_near_reflectance, args.bare_ndvi_threshold, args.definition)
     report = {'formula': ('100 * (S2A - S2B) / S2B' if args.definition == 'a-b' else '100 * (off_nadir - near_nadir) / near_nadir'),
               'phase_direction': 'off-nadir solar phase minus near-nadir solar phase',
               'min_near_reflectance': args.min_near_reflectance, 'bare_ndvi_threshold': args.bare_ndvi_threshold,
               'crop_ndvi_source': 'near-nadir observation', 'counts_by_band': counts,
+              'min_pair_samples': args.min_pair_samples, 'variance_scale': args.variance_scale,
+              'pair_summary_rows': len(pair_rows), 'too_few_samples': sum(row['status'] != 'ok' for row in pair_rows),
+              'duplicate_matchups': duplicate_matchups,
+              'pooled_outputs_requested': args.include_pooled,
               'inputs': inputs, 'skipped': skipped,
-              'note': 'Samples are pooled; variability is sample SD, not uncertainty across independent overpasses.'}
+              'note': 'Each variance describes pixels within one tile matchup and class, not uncertainty across independent overpasses.'}
     (args.output/'report.json').write_text(json.dumps(report, indent=2)+'\n', encoding='utf-8')
-    print(f'Analyzed {len(inputs)} groups; wrote {args.output / "relative_difference.png"} and summary.csv')
+    print(f'Analyzed {len(inputs)} overpass groups; wrote {args.output / "pair_summary.csv"}')
+    if has_plot:
+        print(f'Variance plot: {args.output / "variance_per_pair.png"}')
+    else:
+        print('No variance plot: all matchup/class subsets have fewer than the required number of samples.', file=sys.stderr)
     for message in skipped: print(f'Skipped: {message}', file=sys.stderr)
 
 
