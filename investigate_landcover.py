@@ -28,7 +28,7 @@ REQUIRED = ['tile_id', 'scene_a', 'scene_b', 'sensing_a_utc', 'sensing_b_utc',
 REQUIRED += [f'{band}_reflectance_{sensor}' for band in BANDS for sensor in ('a', 'b')]
 
 
-def load_matchups(results):
+def load_matchups(results, extra_columns=()):
     """Keep the newest complete sample set for each specific tile and scene pair."""
     matchups = {}
     skipped = []
@@ -36,10 +36,11 @@ def load_matchups(results):
         table = pq.read_table(path)
         if table.num_rows == 0:
             continue
-        missing = sorted(set(REQUIRED) - set(table.column_names))
+        needed = list(dict.fromkeys([*REQUIRED, *extra_columns]))
+        missing = sorted(set(needed) - set(table.column_names))
         if missing:
             raise ValueError(f'{path}: missing columns: {missing}')
-        data = {name: np.asarray(table[name].to_pylist()) for name in REQUIRED}
+        data = {name: np.asarray(table[name].to_pylist()) for name in needed}
         keys = list(zip(*(data[k] for k in ('tile_id', 'scene_a', 'scene_b'))))
         if any(any(v is None or not str(v).strip() for v in key) for key in keys):
             raise ValueError(f'{path}: missing scene or tile identifier')

@@ -102,3 +102,20 @@ The output includes three figures and their underlying CSV tables:
 * `03_cropland_ndvi.png` and `ndvi_bin_summary.csv`: one line per matchup/band/sensor/phase category, showing the median relative difference in near-nadir NDVI bins `<0`, `[0,0.1)`, `[0.1,0.2)`, `[0.2,0.4)`, `[0.4,0.6)` and `≥0.6`. Lines do not bridge missing or insufficient bins. Stratified sample counts are not area fractions.
 
 `report.json` lists inputs, exclusions, duplicate selections and settings. NDVI < 0.1 is a bare-soil proxy, not ground truth. NDVI and the B04/B08 response use some of the same reflectances, which can induce mathematical coupling. The figures show within-matchup patterns; samples can be spatially correlated, and a single overpass cannot establish a systematic effect.
+
+### Map high-variance bare-cropland matchups
+
+Run the separate mapping and drill-down script after sampling:
+
+```bash
+python map_bare_variance.py /path/to/results \
+  --output /path/to/bare_variance_map \
+  --band B08 --top 5 --min-samples 10 \
+  --tiles-geopackage /path/to/tiles.gpkg --tile-id-field Tile
+```
+
+The GeoPackage and its field option are optional; add `--tile-layer` if it contains multiple feature layers. With no GeoPackage, the script attempts to draw outlines from the original Sentinel-2 tile metadata when those archive paths are accessible. Otherwise it still plots sample locations. The figure is a rough longitude/latitude map with tile outlines when available, not a coastline or political basemap.
+
+`bare_variance_map.png` maps the median longitude and latitude of qualifying bare-cropland sample coordinates for each tile matchup. The color is the sample variance of `100 × (S2A − S2B)/S2B` over near-nadir NDVI < 0.1, for the selected band (B08 by default). At least `--min-samples` valid samples are required per sensor/phase category. If a scene pair has multiple such categories, its highest qualifying within-category variance determines its rank; pixels from different categories are not pooled. The ranking is relative to the available dataset, not a universal definition of high variance. Variance can be driven by extreme ratios; both S2B and near-nadir reflectance must be ≥0.01 by default, adjustable with `--min-reflectance`.
+
+`bare_variance_ranking.csv` records scene IDs, times, tile, sensor/phase category, coordinates, sample count, variance and IQR. Different dates at the same tile may overlap on the map; use the CSV to inspect every ranked matchup. For each of the `--top` matches, `high_variance/` contains `relative_difference.png` and `summary.csv` for that **single S2A–S2B tile matchup**, plus `adjacent_tiles_overview.png` and `adjacent_tiles_summary.csv` for its original four-scene, two-tile group. Each folder's `metadata.json` identifies the source scenes and selection. Use a fresh output directory when changing the ranking options so previous high-variance folders are not mistaken for the current selection.

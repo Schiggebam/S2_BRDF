@@ -61,7 +61,9 @@ class VisualizeTests(unittest.TestCase):
             ]:
                 row = {'worldcover_class':40, 'near_nadir_platform':near_sensor,
                        'solar_phase_a_deg':phase_a, 'solar_phase_b_deg':phase_b,
-                       'ndvi_a': 0.05, 'ndvi_b': 0.05}
+                       'ndvi_a': 0.05, 'ndvi_b': 0.05,
+                       'tile_id': '32UPU' if near_sensor == 'S2A' else '32UQU',
+                       'scene_a': 'A_'+near_sensor, 'scene_b': 'B_'+near_sensor}
                 for band in vis.BANDS:
                     row[f'{band}_reflectance_a'] = a
                     row[f'{band}_reflectance_b'] = b
@@ -87,6 +89,10 @@ class VisualizeTests(unittest.TestCase):
             fixed, _, _, _ = vis.collect(results, 0.01, definition='a-b')
             self.assertAlmostEqual(fixed[('40_bare', 'B04', 'S2A near · lower phase')][0], -100 / 6)
             self.assertAlmostEqual(fixed[('40_bare', 'B04', 'S2B near · lower phase')][0], 20)
+            selected, _, counts, _ = vis.collect(results, 0.01, definition='a-b',
+                                                matchup_filter=('32UPU', 'A_S2A', 'B_S2A'))
+            self.assertEqual(counts['B04']['input'], 2)
+            self.assertEqual(set(k[2] for k in selected), {'S2A near · lower phase'})
 
 
 if __name__ == '__main__':

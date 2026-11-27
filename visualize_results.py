@@ -72,13 +72,23 @@ def find_results(root):
     return sorted(candidates.values(), key=lambda x: x[1]), skipped
 
 
-def collect(results, threshold, ndvi_threshold=0.1, definition='off-near', pair_values=None):
+def collect(results, threshold, ndvi_threshold=0.1, definition='off-near', pair_values=None, matchup_filter=None):
     values = defaultdict(list)
     groups = defaultdict(set)
     counts = defaultdict(lambda: {'input': 0, 'nonfinite': 0, 'low_near': 0, 'valid': 0})
     inputs = []
     for _, manifest_path, data, manifest in results:
         table = pq.read_table(data)
+        if matchup_filter is not None and table.num_rows:
+            import pyarrow.compute as pc
+            filter_columns = ('tile_id', 'scene_a', 'scene_b')
+            missing_filter = set(filter_columns) - set(table.column_names)
+            if missing_filter:
+                raise ValueError(f'{data}: missing matchup filter columns: {sorted(missing_filter)}')
+            mask = pc.equal(table[filter_columns[0]], matchup_filter[0])
+            for column, value in zip(filter_columns[1:], matchup_filter[1:]):
+                mask = pc.and_(mask, pc.equal(table[column], value))
+            table = table.filter(mask)
         if table.num_rows == 0:
             inputs.append({'manifest': manifest_path, 'rows': 0})
             continue
@@ -247,7 +257,7 @@ def make_pair_variance_figure(rows, output, ndvi_threshold, definition, scale):
     return True
 
 
-def make_figure(values, output, threshold, ndvi_threshold, definition='off-near'):
+def make_figure(values, output, threshold, ndvi_threshold, definition='off-near', title=None):
     class_set = {k[0] for k in values}
     if any(c.startswith('40_') for c in class_set):
         class_set.update(('40_bare', '40_vegetated'))
@@ -288,7 +298,7 @@ def make_figure(values, output, threshold, ndvi_threshold, definition='off-near'
     legend = [Line2D([0],[0], color=COLORS[d], lw=8, alpha=.7, label=legend_label(d)) for d in directions]
     legend.append(Line2D([0],[0], marker='D', markerfacecolor='white', markeredgecolor='black', linestyle='None', label='Mean'))
     fig.legend(handles=legend, loc='upper center', bbox_to_anchor=(0.5, 0.91), ncol=len(legend), frameon=False)
-    fig.suptitle('L2A reflectance differences by land cover', y=0.98, fontsize=16, fontweight='bold')
+    fig.suptitle(title or 'L2A reflectance differences by land cover', y=0.98, fontsize=16, fontweight='bold')
     filter_description = (f'Near-nadir and S2B reflectance ≥ {threshold:g}' if definition == 'a-b'
                           else f'Near-nadir reflectance ≥ {threshold:g}')
     fig.text(0.5, 0.025, f'Boxes: 25th–75th percentiles; line: median; whiskers: 1.5 × IQR; outliers hidden. {filter_description}.', ha='center', fontsize=9)
