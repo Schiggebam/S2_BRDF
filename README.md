@@ -84,3 +84,21 @@ By default, `variance_per_pair.png` shows one point for each **tile matchup**, b
 At least two valid samples are required to calculate variance; use `--min-pair-samples` to require more. Subsets with too few samples remain in the CSV with status `too_few_samples` but are omitted from the plot. If a tile's identical S2A/S2B acquisition pair appears in several adjacent-tile overpass groups, the latest completed group is selected for that matchup and skipped duplicates are listed in `report.json`. This is separate from the four-scene-group deduplication described above. Adjacent tiles can geographically overlap; their pixel samples are not deduplicated across tile IDs. Use a new output directory when changing options so old plots cannot be mistaken for new results.
 
 The former pooled box plot and pooled `summary.csv` can optionally be generated with `--include-pooled`. That figure has median and quartiles, whiskers and mean; the plotted whiskers omit outliers but the mean and CSV statistics include them. Pooled samples may be spatially correlated and are not independent overpasses; inspect the input report, acquisition geometry and class sampling before generalizing.
+
+### Investigate land-cover differences
+
+`investigate_landcover.py` is a separate analysis script. It reuses the checksum-verified result discovery in `visualize_results.py`, but does not run the sampling pipeline or change its outputs:
+
+```bash
+python investigate_landcover.py /path/to/results --output /path/to/landcover_investigation
+```
+
+It uses the consistent `100 × (S2A − S2B) / S2B` definition, and requires both S2B and the near-nadir reflectance to be at least 0.01. Use `--min-reflectance` to change the threshold and `--min-samples` to change the minimum valid samples per tile matchup, band, class/bin and sensor/phase category (default 10). Subsets below the minimum are recorded in the CSV but not plotted or used for contrasts. Each scene pair is analyzed separately; if it appears in multiple overpass groups, the latest completed instance is used and the choice is recorded.
+
+The output includes three figures and their underlying CSV tables:
+
+* `01_within_matchup_spread.png` and `class_summary.csv`: IQR and sample variance of the relative differences, per matchup and land-cover class. IQR is in percentage points; variance is in squared percentage points and includes outliers. The variance panels use a symmetric-log scale.
+* `02_contrast_vs_geometry.png` and `geometry_contrasts.csv`: median difference for cropland with near-nadir NDVI < 0.1 minus the median of each comparison class in the **same** tile matchup, band and sensor/phase category. The horizontal coordinate is the median off-nadir minus near-nadir solar phase angle of the bare-cropland samples. The CSV also records the comparison-class geometry and both sample counts. Different classes are sampled at different locations within the tile, so their geometry can differ.
+* `03_cropland_ndvi.png` and `ndvi_bin_summary.csv`: one line per matchup/band/sensor/phase category, showing the median relative difference in near-nadir NDVI bins `<0`, `[0,0.1)`, `[0.1,0.2)`, `[0.2,0.4)`, `[0.4,0.6)` and `≥0.6`. Lines do not bridge missing or insufficient bins. Stratified sample counts are not area fractions.
+
+`report.json` lists inputs, exclusions, duplicate selections and settings. NDVI < 0.1 is a bare-soil proxy, not ground truth. NDVI and the B04/B08 response use some of the same reflectances, which can induce mathematical coupling. The figures show within-matchup patterns; samples can be spatially correlated, and a single overpass cannot establish a systematic effect.
